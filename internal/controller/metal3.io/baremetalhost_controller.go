@@ -188,6 +188,10 @@ func (r *BareMetalHostReconciler) Reconcile(ctx context.Context, request ctrl.Re
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	if _, ownershipErr := readLiveISODataImage(host); ownershipErr != nil {
+		return ctrl.Result{}, ownershipErr
+	}
+
 	// Retrieve the BMC details from the host spec and validate host
 	// BMC details and build the credentials for talking to the
 	// management controller.
@@ -671,6 +675,10 @@ func hasCustomDeploy(host *metal3api.BareMetalHost) bool {
 // detachHost() detaches the host from the Provisioner.
 func (r *BareMetalHostReconciler) detachHost(ctx context.Context, prov provisioner.Provisioner, info *reconcileInfo, force bool) actionResult {
 	info.log.V(VerbosityLevelTrace).Info("detachHost started")
+	if hasLiveISODataImage(info.host) {
+		return recordActionFailure(info, metal3api.DetachError,
+			"live ISO deployment must be torn down before detaching its host")
+	}
 	provResult, err := prov.Detach(ctx, force)
 	if err != nil {
 		return actionError{fmt.Errorf("failed to detach: %w", err)}
@@ -1419,8 +1427,20 @@ func (r *BareMetalHostReconciler) actionProvisioning(ctx context.Context, prov p
 		return recordActionFailure(info, metal3api.ProvisioningError, err.Error())
 	}
 
+	dataImageURL, dataImageResult := r.liveISODataImage(ctx, info, image)
+	if dataImageResult != nil {
+		return dataImageResult
+	}
+	if dataImageURL != "" {
+		if _, supported := prov.(provisioner.ConfigDriveProvisioner); !supported {
+			return recordActionFailure(info, metal3api.ProvisioningError,
+				"provisioner does not support live ISO configuration delivery")
+		}
+	}
+
 	provResult, err := prov.Provision(ctx, provisioner.ProvisionData{
 		Image:           image,
+		DataImageURL:    dataImageURL,
 		CustomDeploy:    info.host.Spec.CustomDeploy.DeepCopy(),
 		HostConfig:      hostConf,
 		BootMode:        info.host.Status.Provisioning.BootMode,
@@ -1526,6 +1546,9 @@ func (r *BareMetalHostReconciler) actionDeprovisioning(ctx context.Context, prov
 		if clearError(info.host) {
 			return actionUpdate{result}
 		}
+		return result
+	}
+	if result := r.releaseLiveISODataImage(ctx, info); result != nil {
 		return result
 	}
 
@@ -1824,6 +1847,11 @@ func (r *BareMetalHostReconciler) manageHostPower(ctx context.Context, prov prov
 // DataImage handler for attaching/detaching image.
 func (r *BareMetalHostReconciler) handleDataImageActions(ctx context.Context, prov provisioner.Provisioner, info *reconcileInfo) actionResult {
 	info.log.V(VerbosityLevelTrace).Info("handleDataImageActions started")
+	if hasLiveISODataImage(info.host) {
+		// Deployment owns both images. Ordinary power management must never
+		// replace configuration or eject the boot ISO through CD-wide detach.
+		return nil
+	}
 	dataImage := &metal3api.DataImage{}
 	if err := r.Get(ctx, info.request.NamespacedName, dataImage); err != nil {
 		// DataImage does not exist or it may have been deleted
@@ -1833,6 +1861,9 @@ func (r *BareMetalHostReconciler) handleDataImageActions(ctx context.Context, pr
 		}
 		// Error reading the object - requeue the request.
 		return actionError{fmt.Errorf("could not load dataImage, %w", err)}
+	}
+	if _, owned := dataImage.Annotations[deploymentDataImageOwnerAnnotation]; owned {
+		return actionContinue{dataImageUpdateDelay}
 	}
 
 	// Update reconciliation timestamp for dataImage

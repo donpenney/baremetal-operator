@@ -1166,12 +1166,14 @@ func (p *ironicProvisioner) Prepare(ctx context.Context, data provisioner.Prepar
 	return result, started, err
 }
 
-func (p *ironicProvisioner) getConfigDrive(ctx context.Context, data provisioner.ProvisionData) (configDrive nodes.ConfigDrive, err error) {
-	// In theory, Ironic can support configdrive with live ISO by attaching
-	// it to another virtual media slot. However, some hardware does not
-	// support two virtual media devices at the same time, so we shouldn't
-	// try it.
+func (p *ironicProvisioner) getConfigDrive(ctx context.Context, data provisioner.ProvisionData) (any, error) {
+	var configDrive nodes.ConfigDrive
 	if data.Image.IsLiveISO() {
+		if data.DataImageURL != "" {
+			// Preserve the existing image layout rather than generating an
+			// OpenStack configdrive from the host configuration Secrets.
+			return data.DataImageURL, nil
+		}
 		p.log.Info("not providing config drive for live ISO")
 		return configDrive, nil
 	}
@@ -1260,7 +1262,7 @@ func (p *ironicProvisioner) Provision(ctx context.Context, data provisioner.Prov
 		// should stop. (If the image values do not match, we want to try
 		// again.)
 		var provResult provisioner.Result
-		var configDrive nodes.ConfigDrive
+		var configDrive any
 		if ironicHasSameImage {
 			// Save me from "eventually consistent" systems built on
 			// top of relational databases...
@@ -1309,7 +1311,7 @@ func (p *ironicProvisioner) Provision(ctx context.Context, data provisioner.Prov
 
 	case nodes.Available:
 		var provResult provisioner.Result
-		var configDrive nodes.ConfigDrive
+		var configDrive any
 
 		if provResult, err = p.setUpForProvisioning(ctx, ironicNode, data); err != nil || provResult.Dirty || provResult.ErrorMessage != "" {
 			return provResult, err
@@ -1332,6 +1334,15 @@ func (p *ironicProvisioner) Provision(ctx context.Context, data provisioner.Prov
 		)
 
 	case nodes.Active:
+		if data.Image.IsLiveISO() && data.DataImageURL != "" {
+			attached, err := p.GetConfigDriveStatus(ctx, data.DataImageURL)
+			if err != nil {
+				return transientError(err)
+			}
+			if !attached {
+				return operationFailed("live ISO configuration is not attached to the deployed host")
+			}
+		}
 		// provisioning is done
 		p.publisher("ProvisioningComplete",
 			"Image provisioning completed for "+data.Image.URL)

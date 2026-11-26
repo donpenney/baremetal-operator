@@ -226,6 +226,10 @@ func (hsm *hostStateMachine) checkInitiateDelete(log logr.Logger) bool {
 		// Delete not requested
 		return false
 	}
+	if hasLiveISODataImage(hsm.Host) && hsm.NextState != metal3api.StateDeprovisioning {
+		hsm.NextState = metal3api.StateDeprovisioning
+		return true
+	}
 
 	if hsm.NextState != metal3api.StateDeleting && hsm.Host.OperationalStatus() == metal3api.OperationalStatusDetached {
 		if delayDeleteForDetachedHost(hsm.Host) {
@@ -585,6 +589,10 @@ func (hsm *hostStateMachine) handleDeprovisioning(ctx context.Context, info *rec
 			hsm.NextState = metal3api.StatePoweringOffBeforeDelete
 			hsm.Host.Status.ErrorCount = 0
 		case actionFailed:
+			if hasLiveISODataImage(hsm.Host) {
+				// Owned media must be released before the host can disappear.
+				return actResult
+			}
 			// If the provisioner gives up deprovisioning and
 			// deletion has been requested, continue to delete.
 			if hsm.Host.Status.ErrorCount > retryCount {
@@ -594,6 +602,9 @@ func (hsm *hostStateMachine) handleDeprovisioning(ctx context.Context, info *rec
 				return actionComplete{}
 			}
 		case actionError:
+			if hasLiveISODataImage(hsm.Host) {
+				return actResult
+			}
 			if r.NeedsRegistration() && !hsm.haveCreds {
 				// If the host is not registered as a node in Ironic and we
 				// lack the credentials to deprovision it, just continue to

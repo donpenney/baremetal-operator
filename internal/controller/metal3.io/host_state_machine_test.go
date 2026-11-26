@@ -1482,3 +1482,7 @@ func TestUpdateBootModeStatus(t *testing.T) {
 		})
 	}
 }
+
+func (p *mockProvisioner) GetConfigDriveStatus(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}

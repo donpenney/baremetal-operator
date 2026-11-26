@@ -261,6 +261,37 @@ func TestProvision(t *testing.T) {
 	}
 }
 
+func TestProvisionLiveISOWithDataImage(t *testing.T) {
+	const nodeUUID = "33ce8659-7400-4c68-9535-d10766f07a58"
+	const dataImageURL = "https://example.com/cluster-config.iso"
+	for _, state := range []nodes.ProvisionState{nodes.Available, nodes.DeployFail} {
+		t.Run(string(state), func(t *testing.T) {
+			ironic := testserver.NewIronic(t).WithDefaultResponses().Node(nodes.Node{
+				UUID:            nodeUUID,
+				ProvisionState:  string(state),
+				InstanceInfo:    map[string]any{"boot_iso": "https://example.com/previous.iso"},
+				DeployInterface: "ramdisk",
+			})
+			ironic.Start()
+			defer ironic.Stop()
+			host := makeHost()
+			host.Status.Provisioning.ID = nodeUUID
+			prov, err := newProvisionerWithSettings(host, bmc.Credentials{}, func(string, string) {}, ironic.Endpoint(), clients.AuthConfig{Type: clients.NoAuth})
+			require.NoError(t, err)
+			_, err = prov.Provision(t.Context(), provisioner.ProvisionData{
+				Image:        metal3api.Image{URL: "https://example.com/live.iso", DiskFormat: ptr.To("live-iso")},
+				DataImageURL: dataImageURL,
+				HostConfig:   fixture.NewHostConfigData("", "", ""),
+				BootMode:     metal3api.DefaultBootMode,
+			}, false)
+			require.NoError(t, err)
+			request := ironic.GetLastNodeStatesProvisionUpdateRequestFor(nodeUUID)
+			assert.Equal(t, nodes.TargetActive, request.Target)
+			assert.Equal(t, dataImageURL, request.ConfigDrive)
+		})
+	}
+}
+
 func TestDeprovision(t *testing.T) {
 	nodeUUID := "33ce8659-7400-4c68-9535-d10766f07a58"
 	cases := []struct {

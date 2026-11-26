@@ -342,3 +342,7 @@ func (p *demoProvisioner) HasPowerFailure(_ context.Context) bool {
 func (p *demoProvisioner) GetHealth(_ context.Context) string {
 	return ""
 }
+
+func (p *demoProvisioner) GetConfigDriveStatus(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}

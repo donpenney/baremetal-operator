@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
@@ -109,11 +111,25 @@ func (r *DataImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{Requeue: true, RequeueAfter: dataImageRetryDelay}, fmt.Errorf("could not load dataImage, %w", err)
 	}
 
+	owner, err := readImageClaim(di, deploymentDataImageOwnerAnnotation)
+	if err != nil {
+		return ctrl.Result{RequeueAfter: dataImageUpdateDelay}, err
+	}
+	if owner != nil && owner.UID != di.UID {
+		return ctrl.Result{}, fmt.Errorf("DataImage ownership identity does not match its resource UID")
+	}
+	if owner != nil && owner.Released {
+		return r.finishReleasedDataImage(ctx, di)
+	}
+
 	// If a corresponding BareMetalHost is missing, keep retrying
 	bmh := &metal3api.BareMetalHost{}
 	if err := r.Get(ctx, req.NamespacedName, bmh); err != nil {
 		// There might not be any BareMetalHost for the DataImage
 		if k8serrors.IsNotFound(err) {
+			if owner != nil {
+				return ctrl.Result{RequeueAfter: dataImageRetryDelay}, fmt.Errorf("host is missing but live ISO media release is not acknowledged")
+			}
 			reqLogger.Info("bareMetalHost not found for the dataImage, remove finalizer if it exists")
 			if controllerutil.RemoveFinalizer(di, metal3api.DataImageFinalizer) {
 				if err = r.Update(ctx, di); err != nil {
@@ -136,6 +152,9 @@ func (r *DataImageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if _, ok := annotations[metal3api.PausedAnnotation]; ok {
 		reqLogger.Info("host associated with dataImage is paused, no work to do")
 		return ctrl.Result{Requeue: false}, nil
+	}
+	if hasLiveISODataImage(bmh) || di.Annotations[deploymentDataImageOwnerAnnotation] != "" {
+		return r.reconcileDeploymentDataImage(ctx, info)
 	}
 
 	// If DataImage exists, add its ownerReference
@@ -270,6 +289,13 @@ func (r *DataImageReconciler) publishEvent(ctx context.Context, request ctrl.Req
 // Update events.
 func (r *DataImageReconciler) updateEventHandler(e event.UpdateEvent) bool {
 	r.Log.Info("dataimage in event handler")
+	if host, ok := e.ObjectNew.(*metal3api.BareMetalHost); ok {
+		old, ok := e.ObjectOld.(*metal3api.BareMetalHost)
+		return !ok || !reflect.DeepEqual(old.Annotations, host.Annotations)
+	}
+	if !reflect.DeepEqual(e.ObjectOld.GetAnnotations(), e.ObjectNew.GetAnnotations()) || !reflect.DeepEqual(e.ObjectOld.GetDeletionTimestamp(), e.ObjectNew.GetDeletionTimestamp()) {
+		return true
+	}
 
 	// If the update increased the resource Generation then let's process it
 	if e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration() {
@@ -284,6 +310,10 @@ func (r *DataImageReconciler) updateEventHandler(e event.UpdateEvent) bool {
 func (r *DataImageReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrentReconcile int) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&metal3api.DataImage{}).
+		Watches(&metal3api.BareMetalHost{}, handler.EnqueueRequestsFromMapFunc(
+			func(_ context.Context, object client.Object) []ctrl.Request {
+				return []ctrl.Request{{NamespacedName: client.ObjectKeyFromObject(object)}}
+			})).
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconcile}).
 		WithEventFilter(
 			predicate.Funcs{

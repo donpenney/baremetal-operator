@@ -441,3 +441,7 @@ func (p *fixtureProvisioner) GetHealth(_ context.Context) string {
 	}
 	return p.state.Health
 }
+
+func (p *fixtureProvisioner) GetConfigDriveStatus(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}

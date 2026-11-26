@@ -18,10 +18,12 @@ func TestEmpty(t *testing.T) {
 	nodeUUID := "33ce8659-7400-4c68-9535-d10766f07a58"
 
 	cases := []struct {
-		name       string
-		hostData   provisioner.HostConfigData
-		diskFormat string
-		expected   nodes.ConfigDrive
+		name         string
+		hostData     provisioner.HostConfigData
+		diskFormat   string
+		dataImageURL string
+		expectedURL  string
+		expected     nodes.ConfigDrive
 	}{
 		{
 			name:     "default",
@@ -85,8 +87,9 @@ func TestEmpty(t *testing.T) {
 			},
 		},
 		{
-			name:     "only user data",
-			hostData: fixture.NewHostConfigData("testUserData", "", ""),
+			name:         "ordinary image retains user data despite DataImage URL",
+			hostData:     fixture.NewHostConfigData("testUserData", "", ""),
+			dataImageURL: "https://example.com/unused-configuration.iso",
 			expected: nodes.ConfigDrive{
 				MetaData: map[string]any{
 					"local-hostname":   "myhost",
@@ -111,6 +114,12 @@ func TestEmpty(t *testing.T) {
 					"test":             "Meta",
 				},
 			},
+		},
+		{
+			name:         "live ISO preserves existing DataImage bytes",
+			diskFormat:   "live-iso",
+			dataImageURL: "https://example.com/cluster-config.iso",
+			expectedURL:  "https://example.com/cluster-config.iso",
 		},
 		{
 			name:       "live ISO",
@@ -145,8 +154,9 @@ func TestEmpty(t *testing.T) {
 			}
 
 			result, err := prov.getConfigDrive(t.Context(), provisioner.ProvisionData{
-				HostConfig: tc.hostData,
-				BootMode:   metal3api.DefaultBootMode,
+				HostConfig:   tc.hostData,
+				DataImageURL: tc.dataImageURL,
+				BootMode:     metal3api.DefaultBootMode,
 				Image: metal3api.Image{
 					URL:        "http://image",
 					DiskFormat: diskFormat,
@@ -157,8 +167,12 @@ func TestEmpty(t *testing.T) {
 				tc.expected.MetaData["uuid"] = string(prov.objectMeta.UID)
 			}
 
-			assert.Equal(t, tc.expected, result)
 			require.NoError(t, err)
+			if tc.expectedURL != "" {
+				assert.Equal(t, tc.expectedURL, result)
+			} else {
+				assert.Equal(t, tc.expected, result)
+			}
 		})
 	}
 }

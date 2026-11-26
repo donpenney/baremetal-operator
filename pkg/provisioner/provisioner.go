@@ -57,6 +57,13 @@ type Factory interface {
 	NewProvisioner(ctx context.Context, hostData HostData, publish EventPublisher) (Provisioner, error)
 }
 
+// ConfigDriveProvisioner supports live ISO deployment with DataImageURL and
+// observation of that exact configuration. Optional so existing provisioner
+// plugins remain compatible and unsupported requests can fail before boot.
+type ConfigDriveProvisioner interface {
+	GetConfigDriveStatus(ctx context.Context, sourceURL string) (bool, error)
+}
+
 // HostConfigData retrieves host configuration data.
 type HostConfigData interface {
 	// UserData is the interface for a function to retrieve user
@@ -139,6 +146,9 @@ type ProvisionData struct {
 	RootDeviceHints *metal3api.RootDeviceHints
 	CustomDeploy    *metal3api.CustomDeploy
 	ImagePullSecret string
+	// DataImageURL identifies an existing configuration ISO to attach before
+	// powering on a live-ISO deployment.
+	DataImageURL string
 }
 
 type HTTPHeaders []map[string]string
